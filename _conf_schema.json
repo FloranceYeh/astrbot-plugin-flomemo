@@ -14,7 +14,7 @@
         "description": "Milvus Lite 数据路径",
         "type": "string",
         "hint": "优先使用 Milvus Lite，本地路径或相对路径（相对插件数据目录）",
-        "default": ""
+        "default": "milvus/flomemo.db"
       },
       "address": {
         "description": "Milvus 服务地址",

@@ -26,6 +26,39 @@
 - `milvus.lite_path` / `milvus.address`：Milvus Lite 或远程地址配置。
 - `milvus.collection`：工作记忆集合名称。
 
+## Milvus 配置示例
+
+在 AstrBot 的插件配置界面，填写 `milvus` 对象即可：
+
+```json
+{
+  "milvus": {
+    "lite_path": "milvus/flomemo.db",
+    "db_name": "default",
+    "collection": "flomemo_working_memory"
+  }
+}
+```
+
+未配置 `milvus.lite_path` 且未填写 `milvus.address` 时，默认会创建到：
+`data\plugin_data\astrbot_plugin_flomemo\milvus\flomemo.db`。
+
+如需连接远程 Milvus（Standalone 或托管服务）：
+
+```json
+{
+  "milvus": {
+    "address": "127.0.0.1:19530",
+    "db_name": "default",
+    "user": "",
+    "password": "",
+    "token": "",
+    "secure": false,
+    "collection": "flomemo_working_memory"
+  }
+}
+```
+
 ## 依赖
 
 工作记忆使用 Milvus 向量数据库，请安装 `requirements.txt` 并配置 Milvus 连接信息。
