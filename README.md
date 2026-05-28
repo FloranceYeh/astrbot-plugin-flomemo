@@ -4,7 +4,7 @@
 
 ## 功能概览
 
-- **工作记忆**：保存最近几天对话，支持向量检索回忆。
+- **工作记忆**：按配置的对话轮数生成摘要并保存，支持向量检索回忆。
 - **每日 TLDR**：每日定时将当天内容提炼成 TLDR 存档。
 - **知识图谱**：抽取人物关系、事件因果等结构化关系。
 
@@ -21,6 +21,8 @@
 在 WebUI 中配置 `_conf_schema.json` 对应项，例如：
 
 - `retention_days`：工作记忆保留天数。
+- `working_memory_batch_size`：每 N 轮对话生成一次工作记忆摘要。
+- `working_memory_summary_prompt`：工作记忆摘要提示词。
 - `summary_time`：每日 TLDR 生成时间（HH:MM）。
 - `graph_enabled`：是否启用知识图谱抽取。
 - `milvus.lite_path` / `milvus.address`：Milvus Lite 或远程地址配置。

@@ -75,6 +75,19 @@
     "minimum": 1,
     "maximum": 20
   },
+  "working_memory_batch_size": {
+    "description": "工作记忆总结触发阈值（对话轮数）",
+    "type": "int",
+    "hint": "每 N 轮对话（用户+机器人）生成一次工作记忆摘要",
+    "default": 5,
+    "minimum": 1,
+    "maximum": 50
+  },
+  "working_memory_summary_prompt": {
+    "description": "工作记忆总结提示词",
+    "type": "text",
+    "default": "请将以下对话内容压缩成一段可检索的工作记忆摘要。要求：\\n1) 保留关键人物、事件、时间、结论与约束；\\n2) 保留重要数字/数量/规格；\\n3) 使用简洁自然语言，不分点；\\n4) 不引入臆测与解释。\\n\\n对话内容：\\n{content}"
+  },
   "summary_time": {
     "description": "每日 TLDR 生成时间",
     "type": "string",

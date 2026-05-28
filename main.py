@@ -1,11 +1,20 @@
 from datetime import datetime
 
-from astrbot.api import AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 
 from .core import KnowledgeGraphStore, SummaryArchive, WorkingMemoryStore
+
+DEFAULT_WORKING_MEMORY_PROMPT = (
+    "请将以下对话内容压缩成一段可检索的工作记忆摘要。要求：\n"
+    "1) 保留关键人物、事件、时间、结论与约束；\n"
+    "2) 保留重要数字/数量/规格；\n"
+    "3) 使用简洁自然语言，不分点；\n"
+    "4) 不引入臆测与解释。\n\n"
+    "对话内容：\n{content}"
+)
 
 
 def _today_str() -> str:
@@ -22,6 +31,8 @@ class FlomemoMemory(Star):
         self.working_memory = WorkingMemoryStore(context, config, self.data_dir)
         self.summary_archive = SummaryArchive(context, config, self.data_dir)
         self.knowledge_graph = KnowledgeGraphStore(context, config, self.data_dir)
+        self._working_memory_buffer: dict[str, list[dict[str, str]]] = {}
+        self._working_memory_turns: dict[str, int] = {}
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
@@ -61,13 +72,12 @@ class FlomemoMemory(Star):
         if not session_id:
             return
         user_text = event.message_str
-        if user_text:
-            await self.working_memory.add_message(session_id, "user", user_text)
         assistant_text = getattr(resp, "completion_text", None)
-        if assistant_text:
-            await self.working_memory.add_message(
-                session_id, "assistant", str(assistant_text)
-            )
+        await self._append_working_memory_batch(
+            session_id,
+            user_text,
+            str(assistant_text) if assistant_text else None,
+        )
 
     @filter.command_group("flomemo")
     def flomemo_group(self):
@@ -143,6 +153,8 @@ class FlomemoMemory(Star):
             return
         await self.working_memory.reset_session(session_id)
         await self.summary_archive.reset_session(session_id)
+        self._working_memory_buffer.pop(session_id, None)
+        self._working_memory_turns.pop(session_id, None)
         yield event.plain_result("已清空当前会话的工作记忆与摘要记录。")
 
     async def terminate(self):
@@ -150,6 +162,8 @@ class FlomemoMemory(Star):
         await self.working_memory.save()
         await self.summary_archive.save()
         await self.knowledge_graph.save()
+        self._working_memory_buffer.clear()
+        self._working_memory_turns.clear()
 
     async def _build_memory_block(
         self, session_id: str, query: str, include_graph: bool = False
@@ -201,3 +215,67 @@ class FlomemoMemory(Star):
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    async def _append_working_memory_batch(
+        self,
+        session_id: str,
+        user_text: str | None,
+        assistant_text: str | None,
+    ):
+        if not user_text and not assistant_text:
+            return
+        batch_size = self._get_config_int("working_memory_batch_size", 5, minimum=1)
+        messages = self._working_memory_buffer.setdefault(session_id, [])
+        if user_text:
+            messages.append({"role": "user", "content": user_text})
+        if assistant_text:
+            messages.append({"role": "assistant", "content": assistant_text})
+        self._working_memory_turns[session_id] = (
+            self._working_memory_turns.get(session_id, 0) + 1
+        )
+        if self._working_memory_turns[session_id] < batch_size:
+            return
+        summary = await self._summarize_working_memory(session_id, messages)
+        if not summary:
+            return
+        stored = await self.working_memory.add_message(session_id, "summary", summary)
+        if not stored:
+            return
+        self._working_memory_buffer[session_id] = []
+        self._working_memory_turns[session_id] = 0
+
+    async def _summarize_working_memory(
+        self, session_id: str, messages: list[dict[str, str]]
+    ) -> str:
+        provider_id = await self._resolve_llm_provider_id(session_id)
+        if not provider_id:
+            return ""
+        content_lines = [
+            f"[{item.get('role', 'user')}] {item.get('content', '')}"
+            for item in messages
+            if item.get("content")
+        ]
+        if not content_lines:
+            return ""
+        prompt_template = self.config.get(
+            "working_memory_summary_prompt", DEFAULT_WORKING_MEMORY_PROMPT
+        )
+        prompt = str(prompt_template).format(content="\n".join(content_lines))
+        try:
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+            )
+        except Exception as exc:
+            logger.error(f"工作记忆摘要生成失败: {exc}")
+            return ""
+        return getattr(llm_resp, "completion_text", "").strip()
+
+    async def _resolve_llm_provider_id(self, session_id: str) -> str | None:
+        provider_id = str(self.config.get("llm_provider_id", "")).strip()
+        if provider_id:
+            return provider_id
+        try:
+            return await self.context.get_current_chat_provider_id(umo=session_id)
+        except AttributeError:
+            return None

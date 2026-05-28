@@ -75,17 +75,17 @@ class WorkingMemoryStore:
     async def save(self):
         await self._ensure_collection()
 
-    async def add_message(self, session_id: str, role: str, content: str):
+    async def add_message(self, session_id: str, role: str, content: str) -> bool:
         content = content.strip()
         if not content:
-            return
+            return False
         embedding = await self._embed_text(content)
         if embedding is None:
             logger.warning("未生成 embedding，跳过工作记忆写入。")
-            return
+            return False
         await self._ensure_collection(dim=len(embedding))
         if not self._client or not self._collection_name:
-            return
+            return False
         payload = [
             {
                 "id": str(uuid.uuid4()),
@@ -104,6 +104,7 @@ class WorkingMemoryStore:
                 payload,
             )
         await self._prune()
+        return True
 
     async def query(self, session_id: str, query: str, top_k: int) -> list[dict[str, Any]]:
         await self._ensure_collection()
