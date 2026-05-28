@@ -8,6 +8,9 @@ from typing import Any
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.star import Context
 
+from ..config import ConfigAccessor
+from ..metrics import log_metric
+
 DEFAULT_GRAPH_PROMPT = (
     "请从以下 TL;DR 中抽取人物关系、事件因果与关键事实，输出 JSON 数组。"
     "每个元素包含：source, relation, target, type, evidence, confidence。\n"
@@ -82,7 +85,7 @@ def _extract_json_array(text: str) -> list[dict[str, Any]]:
 class KnowledgeGraphStore:
     def __init__(self, context: Context, config: AstrBotConfig, data_dir: Path):
         self.context = context
-        self.config = config
+        self.config = ConfigAccessor(config)
         self._path = data_dir / "knowledge_graph.json"
         self._lock = asyncio.Lock()
         self._nodes: dict[str, str] = {}
@@ -110,11 +113,12 @@ class KnowledgeGraphStore:
         await self._persist_now()
 
     async def update_from_summary(self, session_id: str, date_str: str, summary: str):
+        started_at = time.perf_counter()
         provider_id = await self._resolve_chat_provider_id(session_id)
         if not provider_id:
             logger.warning(f"无法获取 LLM provider，跳过 {session_id} 的图谱抽取。")
             return
-        prompt_template = self._get_graph_config("graph_prompt", DEFAULT_GRAPH_PROMPT)
+        prompt_template = self.config.get_group("graph", "graph_prompt", DEFAULT_GRAPH_PROMPT)
         prompt = str(prompt_template).format(summary=summary)
         llm_resp = await self.context.llm_generate(
             chat_provider_id=provider_id,
@@ -123,20 +127,31 @@ class KnowledgeGraphStore:
         payload = _extract_json_array(getattr(llm_resp, "completion_text", ""))
         if not payload:
             return
+        applied_count = 0
         async with self._lock:
             for item in payload:
                 edge = self._build_edge(item, session_id, date_str)
                 if not edge:
                     continue
                 self._merge_edge(edge)
+                applied_count += 1
         self._request_save()
+        log_metric(
+            "graph_extraction",
+            session_id=session_id,
+            date=date_str,
+            summary_chars=len(summary),
+            extracted_edges=len(payload),
+            applied_edges=applied_count,
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
+        )
 
     async def query(self, query: str) -> list[dict[str, Any]]:
         keywords = _tokenize(query)
         async with self._lock:
             edges = list(self._edges)
-        min_confidence = self._get_graph_float(
-            "graph_min_confidence", DEFAULT_GRAPH_MIN_CONFIDENCE, minimum=0.0, maximum=1.0
+        min_confidence = self.config.get_group_float(
+            "graph", "graph_min_confidence", DEFAULT_GRAPH_MIN_CONFIDENCE, minimum=0.0, maximum=1.0
         )
         filtered = [
             edge
@@ -158,8 +173,14 @@ class KnowledgeGraphStore:
             ),
             reverse=True,
         )
-        limit = self._get_graph_int("graph_query_limit", DEFAULT_GRAPH_QUERY_LIMIT, minimum=1)
+        limit = self.config.get_group_int("graph", "graph_query_limit", DEFAULT_GRAPH_QUERY_LIMIT, minimum=1)
         return ranked[:limit]
+
+    async def reset_session(self, session_id: str):
+        async with self._lock:
+            self._edges = [edge for edge in self._edges if edge.get("session_id") != session_id]
+            self._rebuild_nodes_from_edges(self._edges)
+        await self.save()
 
     async def count_nodes(self) -> int:
         async with self._lock:
@@ -229,39 +250,7 @@ class KnowledgeGraphStore:
             }
         await self._save_json_file(self._path, data)
 
-    def _get_graph_config(self, key: str, default: Any) -> Any:
-        container = self.config.get("graph", {})
-        if isinstance(container, dict):
-            return container.get(key, default)
-        return default
-
-    def _get_graph_int(self, key: str, default: int, minimum: int | None = None) -> int:
-        value = self._get_graph_config(key, default)
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            return minimum
-        return value
-
-    def _get_graph_float(
-        self,
-        key: str,
-        default: float,
-        minimum: float | None = None,
-        maximum: float | None = None,
-    ) -> float:
-        value = self._get_graph_config(key, default)
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            value = minimum
-        if maximum is not None and value > maximum:
-            value = maximum
-        return value
+    
 
     def _load_nodes(self, nodes: Any) -> dict[str, str]:
         if not isinstance(nodes, list):

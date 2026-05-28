@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.star import Context
+from ..config import ConfigAccessor
 from pymilvus import CollectionSchema, DataType, FieldSchema, MilvusClient
 from pymilvus.exceptions import MilvusException
 from pymilvus.milvus_client.index import IndexParams
@@ -61,7 +62,7 @@ def _escape_expr_value(value: str) -> str:
 class WorkingMemoryStore:
     def __init__(self, context: Context, config: AstrBotConfig, data_dir: Path):
         self.context = context
-        self.config = config
+        self.config = ConfigAccessor(config)
         self._data_dir = data_dir
         self._path = data_dir / "working_memory.json"
         self._lock = asyncio.Lock()
@@ -215,9 +216,9 @@ class WorkingMemoryStore:
         return self._client is not None
 
     def _connect(self):
-        lite_path = str(self._get_milvus_config("lite_path", "")).strip()
-        address = str(self._get_milvus_config("address", "")).strip()
-        secure = self._get_milvus_bool("secure", False)
+        lite_path = str(self.config.get_group("milvus", "lite_path", "")).strip()
+        address = str(self.config.get_group("milvus", "address", "")).strip()
+        secure = self.config.get_group_bool("milvus", "secure", False)
         if not lite_path and not address:
             lite_path = "milvus/flomemo.db"
         if lite_path:
@@ -235,10 +236,10 @@ class WorkingMemoryStore:
         else:
             uri = "http://127.0.0.1:19530"
 
-        db_name = str(self._get_milvus_config("db_name", "default")).strip()
-        user = str(self._get_milvus_config("user", "")).strip()
-        password = str(self._get_milvus_config("password", "")).strip()
-        token = str(self._get_milvus_config("token", "")).strip()
+        db_name = str(self.config.get_group("milvus", "db_name", "default")).strip()
+        user = str(self.config.get_group("milvus", "user", "")).strip()
+        password = str(self.config.get_group("milvus", "password", "")).strip()
+        token = str(self.config.get_group("milvus", "token", "")).strip()
 
         self._client = MilvusClient(
             uri=uri,
@@ -258,7 +259,7 @@ class WorkingMemoryStore:
         async with self._lock:
             if self._collection_name is not None:
                 return
-            name = str(self._get_milvus_config("collection", "flomemo_working_memory"))
+            name = str(self.config.get_group("milvus", "collection", "flomemo_working_memory"))
             if self._client.has_collection(name):
                 self._client.load_collection(name)
                 self._collection_name = name
@@ -299,7 +300,7 @@ class WorkingMemoryStore:
             self._collection_name = name
 
     async def _prune(self):
-        retention_days = self._get_working_memory_int("retention_days", 3, minimum=1)
+        retention_days = self.config.get_group_int("working_memory", "retention_days", 3, minimum=1)
         cutoff = _now_ts() - retention_days * 86400
         async with self._lock:
             kept_records = [
@@ -439,7 +440,7 @@ class WorkingMemoryStore:
             age_seconds = max(_now_ts() - float(ts), 0.0)
         except (TypeError, ValueError):
             return 0.0
-        retention_days = self._get_working_memory_int("retention_days", 3, minimum=1)
+        retention_days = self.config.get_group_int("working_memory", "retention_days", 3, minimum=1)
         horizon_seconds = retention_days * 86400
         if horizon_seconds <= 0:
             return 0.0
@@ -494,55 +495,7 @@ class WorkingMemoryStore:
             return provider
         return None
 
-    def _get_config_int(self, key: str, default: int, minimum: int | None = None) -> int:
-        value = self.config.get(key, default)
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            return minimum
-        return value
-
-    def _get_config_bool(self, key: str, default: bool) -> bool:
-        value = self.config.get(key, default)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def _get_working_memory_config(self, key: str, default: Any) -> Any:
-        container = self.config.get("working_memory", {})
-        if isinstance(container, dict):
-            return container.get(key, default)
-        return default
-
-    def _get_working_memory_int(
-        self, key: str, default: int, minimum: int | None = None
-    ) -> int:
-        value = self._get_working_memory_config(key, default)
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            return minimum
-        return value
-
-    def _get_milvus_config(self, key: str, default: Any) -> Any:
-        container = self.config.get("milvus", {})
-        if isinstance(container, dict):
-            return container.get(key, default)
-        return default
-
-    def _get_milvus_bool(self, key: str, default: bool) -> bool:
-        value = self._get_milvus_config(key, default)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return bool(value)
+    
 
     async def _load_json_file(self, path: Path, default: Any) -> Any:
         if not path.exists():

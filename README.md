@@ -14,7 +14,7 @@
 - `/flomemo tldr [YYYY-MM-DD]`：查看指定日期摘要。
 - `/flomemo graph <实体>`：查询知识图谱关系。
 - `/flomemo status`：查看记忆统计。
-- `/flomemo reset confirm`：清空当前会话记忆。
+- `/flomemo reset confirm`：清空当前会话记忆，包括工作记忆、摘要记录与图谱关系。
 
 ## 配置
 

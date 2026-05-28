@@ -1,11 +1,12 @@
 from datetime import datetime
+import time
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 
-from .core import KnowledgeGraphStore, SummaryArchive, WorkingMemoryStore
+from .core import ConfigAccessor, KnowledgeGraphStore, SummaryArchive, WorkingMemoryStore, log_metric
 
 DEFAULT_WORKING_MEMORY_PROMPT = (
     "请将以下对话内容压缩成一段可检索的工作记忆摘要。要求：\n"
@@ -25,7 +26,7 @@ def _today_str() -> str:
 class FlomemoMemory(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self.config = config
+        self.config = ConfigAccessor(config)
         self.data_dir = StarTools.get_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -44,7 +45,7 @@ class FlomemoMemory(Star):
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        if not self._get_config_bool("memory_injection", True):
+        if not self.config.get_bool("memory_injection", True):
             return
         query_text = ""
         if isinstance(req.prompt, str) and req.prompt.strip():
@@ -56,7 +57,11 @@ class FlomemoMemory(Star):
         session_id = event.unified_msg_origin
         if not session_id:
             return
-        memory_block = await self._build_memory_block(session_id, query_text)
+        memory_block = await self._build_memory_block(
+            session_id,
+            query_text,
+            metric_name="memory_injection",
+        )
         if not memory_block:
             return
         target = self.config.get("memory_injection_target", "system_prompt")
@@ -92,7 +97,12 @@ class FlomemoMemory(Star):
         if not session_id:
             yield event.plain_result("无法获取当前会话 ID。")
             return
-        memory_block = await self._build_memory_block(session_id, query, include_graph=True)
+        memory_block = await self._build_memory_block(
+            session_id,
+            query,
+            include_graph=True,
+            metric_name="recall",
+        )
         if not memory_block:
             yield event.plain_result("暂无可用记忆。")
             return
@@ -158,9 +168,10 @@ class FlomemoMemory(Star):
             return
         await self.working_memory.reset_session(session_id)
         await self.summary_archive.reset_session(session_id)
+        await self.knowledge_graph.reset_session(session_id)
         self._working_memory_buffer.pop(session_id, None)
         self._working_memory_turns.pop(session_id, None)
-        yield event.plain_result("已清空当前会话的工作记忆与摘要记录。")
+        yield event.plain_result("已清空当前会话的工作记忆、摘要记录与图谱关系。")
 
     async def terminate(self):
         await self.summary_archive.stop_scheduler()
@@ -171,17 +182,22 @@ class FlomemoMemory(Star):
         self._working_memory_turns.clear()
 
     async def _build_memory_block(
-        self, session_id: str, query: str, include_graph: bool = False
+        self,
+        session_id: str,
+        query: str,
+        include_graph: bool = False,
+        metric_name: str | None = None,
     ) -> str:
-        top_k = self._get_group_int("working_memory", "working_memory_top_k", 5, minimum=1)
+        started_at = time.perf_counter()
+        top_k = self.config.get_group_int("working_memory", "working_memory_top_k", 5, minimum=1)
         working_items = await self.working_memory.query(session_id, query, top_k)
-        summary_days = self._get_group_int("summary", "summary_injection_days", 7, minimum=1)
+        summary_days = self.config.get_group_int("summary", "summary_injection_days", 7, minimum=1)
         summaries = await self.summary_archive.get_recent(session_id, summary_days)
         graph_edges: list[dict[str, str]] = []
-        if include_graph or self._get_group_bool("graph", "graph_enabled", True):
+        if include_graph or self.config.get_group_bool("graph", "graph_enabled", True):
             graph_edges = await self.knowledge_graph.query(query)
 
-        remaining = self._get_config_int(
+        remaining = self.config.get_int(
             "memory_injection_max_chars",
             DEFAULT_MEMORY_INJECTION_MAX_CHARS,
             minimum=300,
@@ -203,7 +219,7 @@ class FlomemoMemory(Star):
             )
         if graph_edges:
             graph_edges.sort(key=lambda edge: str(edge.get("date", "")), reverse=True)
-            max_edges = self._get_group_int("graph", "graph_max_edges", 6, minimum=0)
+            max_edges = self.config.get_group_int("graph", "graph_max_edges", 6, minimum=0)
             trimmed = graph_edges[:max_edges] if max_edges > 0 else []
             if trimmed:
                 lines = [
@@ -213,55 +229,19 @@ class FlomemoMemory(Star):
                 remaining = self._append_memory_section(
                     "【知识图谱】", lines, sections, seen, remaining
                 )
-        return "\n\n".join(sections).strip()
-
-    def _get_config_int(self, key: str, default: int, minimum: int | None = None) -> int:
-        value = self.config.get(key, default)
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            return minimum
-        return value
-
-    def _get_config_bool(self, key: str, default: bool) -> bool:
-        value = self.config.get(key, default)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def _get_group_config(self, group: str, key: str, default: object) -> object:
-        container = self.config.get(group, {})
-        if isinstance(container, dict):
-            return container.get(key, default)
-        return default
-
-    def _get_group_int(
-        self,
-        group: str,
-        key: str,
-        default: int,
-        minimum: int | None = None,
-    ) -> int:
-        value = self._get_group_config(group, key, default)
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            return minimum
-        return value
-
-    def _get_group_bool(self, group: str, key: str, default: bool) -> bool:
-        value = self._get_group_config(group, key, default)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return bool(value)
+        result = "\n\n".join(sections).strip()
+        if metric_name:
+            log_metric(
+                metric_name,
+                query_chars=len(query),
+                working_hits=len(working_items),
+                summary_hits=len(summaries),
+                graph_hits=len(graph_edges),
+                injected_chars=len(result),
+                elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                include_graph=include_graph,
+            )
+        return result
 
     def _append_memory_section(
         self,
@@ -318,7 +298,7 @@ class FlomemoMemory(Star):
     ):
         if not user_text and not assistant_text:
             return
-        batch_size = self._get_group_int(
+        batch_size = self.config.get_group_int(
             "working_memory", "working_memory_batch_size", 5, minimum=1
         )
         messages = self._working_memory_buffer.setdefault(session_id, [])
@@ -361,7 +341,7 @@ class FlomemoMemory(Star):
         ]
         if not content_lines:
             return ""
-        prompt_template = self._get_group_config(
+        prompt_template = self.config.get_group(
             "working_memory",
             "working_memory_summary_prompt",
             DEFAULT_WORKING_MEMORY_PROMPT,

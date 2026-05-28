@@ -11,6 +11,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.star import Context
 
+from ..config import ConfigAccessor
+from ..metrics import log_metric
+
 if TYPE_CHECKING:
     from ..knowledge_graph import KnowledgeGraphStore
     from ..working_memory import WorkingMemoryStore
@@ -31,7 +34,7 @@ DEFAULT_SUMMARY_PROMPT = (
 class SummaryArchive:
     def __init__(self, context: Context, config: AstrBotConfig, data_dir: Path):
         self.context = context
-        self.config = config
+        self.config = ConfigAccessor(config)
         self._path = data_dir / "daily_summaries.json"
         self._state_path = data_dir / "daily_summaries_state.json"
         self._lock = asyncio.Lock()
@@ -108,8 +111,8 @@ class SummaryArchive:
         if not grouped:
             return True
 
-        min_messages = self._get_summary_int("summary_min_messages", 6, minimum=1)
-        min_turns = self._get_summary_int("summary_min_turns", 0, minimum=0)
+        min_messages = self.config.get_group_int("summary", "summary_min_messages", 6, minimum=1)
+        min_turns = self.config.get_group_int("summary", "summary_min_turns", 0, minimum=0)
         had_failures = False
         for session_id, items in grouped.items():
             items.sort(key=lambda x: x.get("ts", 0.0))
@@ -123,6 +126,7 @@ class SummaryArchive:
                 self._format_working_memory_summary_line(item) for item in items
             ]
             conversation_text = "\n".join(content_lines)
+            started_at = time.perf_counter()
             tldr = await self._generate_tldr(session_id, conversation_text)
             if tldr is None:
                 had_failures = True
@@ -142,8 +146,17 @@ class SummaryArchive:
             async with self._lock:
                 self._summaries.append(summary_item)
             self._request_save()
-            if graph_store and self._get_group_bool("graph", "graph_enabled", True):
+            if graph_store and self.config.get_group_bool("graph", "graph_enabled", True):
                 await graph_store.update_from_summary(session_id, date_str, tldr)
+            log_metric(
+                "summary_generation",
+                session_id=session_id,
+                date=date_str,
+                source_messages=source_message_count,
+                source_turns=source_turn_count,
+                tldr_chars=len(tldr),
+                elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
+            )
         return not had_failures
 
     async def get_recent(self, session_id: str, days: int) -> list[dict[str, Any]]:
@@ -216,7 +229,7 @@ class SummaryArchive:
         return max((target - now).total_seconds(), 1.0)
 
     def _parse_summary_time(self) -> tuple[int, int]:
-        time_str = str(self._get_group_config("summary", "summary_time", DEFAULT_SUMMARY_TIME))
+        time_str = str(self.config.get_group("summary", "summary_time", DEFAULT_SUMMARY_TIME))
         match = re.match(r"^([01]\d|2[0-3]):([0-5]\d)$", time_str)
         if not match:
             logger.warning(f"summary_time 配置无效，回退为 {DEFAULT_SUMMARY_TIME}")
@@ -232,9 +245,7 @@ class SummaryArchive:
         if not provider_id:
             logger.warning(f"无法获取 LLM provider，跳过 {session_id} 的摘要生成。")
             return None
-        prompt_template = self._get_group_config(
-            "summary", "summary_prompt", DEFAULT_SUMMARY_PROMPT
-        )
+        prompt_template = self.config.get_group("summary", "summary_prompt", DEFAULT_SUMMARY_PROMPT)
         prompt = str(prompt_template).format(content=conversation)
         try:
             llm_resp = await self.context.llm_generate(
@@ -369,7 +380,7 @@ class SummaryArchive:
         return self._timezone
 
     def _get_timezone_name(self) -> str:
-        return str(self._get_group_config("summary", "summary_timezone", DEFAULT_SUMMARY_TIMEZONE)).strip()
+        return str(self.config.get_group("summary", "summary_timezone", DEFAULT_SUMMARY_TIMEZONE)).strip()
 
     def _now(self) -> datetime:
         tz = self._get_timezone()
@@ -400,44 +411,4 @@ class SummaryArchive:
             counts += f", {turn_count} turns"
         return f"[working_memory_summary|{counts}] {item.get('content', '')}"
 
-    def _get_config_int(self, key: str, default: int, minimum: int | None = None) -> int:
-        value = self.config.get(key, default)
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            return minimum
-        return value
-
-    def _get_config_bool(self, key: str, default: bool) -> bool:
-        value = self.config.get(key, default)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def _get_group_config(self, group: str, key: str, default: Any) -> Any:
-        container = self.config.get(group, {})
-        if isinstance(container, dict):
-            return container.get(key, default)
-        return default
-
-    def _get_group_bool(self, group: str, key: str, default: bool) -> bool:
-        value = self._get_group_config(group, key, default)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def _get_summary_int(self, key: str, default: int, minimum: int | None = None) -> int:
-        value = self._get_group_config("summary", key, default)
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = default
-        if minimum is not None and value < minimum:
-            return minimum
-        return value
+    
