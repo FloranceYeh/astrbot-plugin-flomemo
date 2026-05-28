@@ -122,7 +122,11 @@ class FlomemoMemory(Star):
             return
         lines = [
             f"{edge['source']} -[{edge['relation']}]-> {edge['target']}"
-            + (f" ({edge['date']})" if edge.get("date") else "")
+            + (
+                f" ({edge['date']}, confidence={float(edge.get('confidence', 0.0)):.2f})"
+                if edge.get("date")
+                else f" (confidence={float(edge.get('confidence', 0.0)):.2f})"
+            )
             for edge in edges
         ]
         yield event.plain_result("\n".join(lines))

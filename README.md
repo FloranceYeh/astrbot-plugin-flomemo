@@ -29,6 +29,8 @@
 - `summary.summary_injection_days`：注入到会话中的摘要回看天数。
 - `graph.graph_enabled`：是否启用知识图谱抽取。
 - `graph.graph_max_edges`：注入到会话中的图谱边数量上限。
+- `graph.graph_query_limit`：图谱查询默认返回条数。
+- `graph.graph_min_confidence`：图谱查询最小置信度，低于阈值的边会被过滤。
 - `memory_injection_max_chars`：注入记忆的总字符预算，超出时自动裁剪。
 - `milvus.lite_path` / `milvus.address`：Milvus Lite 或远程地址配置。
 - `milvus.collection`：工作记忆集合名称。
@@ -58,7 +60,9 @@
   "graph": {
     "graph_enabled": true,
     "graph_max_edges": 6,
-    "graph_prompt": "请从以下 TL;DR 中抽取人物关系、事件因果与关键事实，输出 JSON 数组。每个元素包含：source, relation, target, type, evidence。\\n仅输出 JSON，不要额外说明。\\n\\nTL;DR：\\n{summary}"
+    "graph_query_limit": 10,
+    "graph_min_confidence": 0.35,
+    "graph_prompt": "请从以下 TL;DR 中抽取人物关系、事件因果与关键事实，输出 JSON 数组。每个元素包含：source, relation, target, type, evidence, confidence。\\nconfidence 为 0 到 1 的浮点数，表示该关系的可信度。\\n仅输出 JSON，不要额外说明。\\n\\nTL;DR：\\n{summary}"
   },
   "milvus": {
     "lite_path": "milvus/flomemo.db",
@@ -110,3 +114,9 @@
 - 工作记忆层先按 `working_memory.working_memory_batch_size` 把多轮对话压成摘要，并为每条摘要保存 `source_count` 与 `source_turn_count` 元数据。
 - 每日 TLDR 层不会直接按“摘要条数”判断是否生成，而是先累计这些元数据，再按 `summary.summary_min_messages` / `summary.summary_min_turns` 判断是否满足阈值。
 - 因此每日 TLDR 依然是基于工作记忆摘要做二级聚合，但阈值统计使用的是真实原始消息量和对话轮数。
+
+## 图谱链路
+
+- 图谱边会按 `source/relation/target/date/session_id` 的归一化唯一键去重，重复抽取不会无限追加同一条边。
+- 实体会做归一化和别名收敛，尽量把大小写、空格、常见符号差异折叠到同一个实体键上。
+- 每条边都带 `confidence`，查询时会先按 `graph.graph_min_confidence` 过滤，再按相关度、置信度和新鲜度排序。
