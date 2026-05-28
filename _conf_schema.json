@@ -1,0 +1,84 @@
+{
+  "embedding_provider_id": {
+    "description": "Embedding 服务提供商",
+    "type": "string",
+    "_special": "select_embedding_provider",
+    "hint": "用于工作记忆向量化的 Embedding Provider，留空则使用默认",
+    "default": ""
+  },
+  "llm_provider_id": {
+    "description": "TLDR/图谱 LLM Provider",
+    "type": "string",
+    "_special": "select_provider",
+    "hint": "用于每日 TLDR 与图谱抽取的模型提供商，留空使用当前会话提供商",
+    "default": ""
+  },
+  "retention_days": {
+    "description": "工作记忆保留天数",
+    "type": "int",
+    "default": 3,
+    "minimum": 1,
+    "maximum": 30
+  },
+  "working_memory_top_k": {
+    "description": "工作记忆召回条数",
+    "type": "int",
+    "default": 5,
+    "minimum": 1,
+    "maximum": 20
+  },
+  "summary_time": {
+    "description": "每日 TLDR 生成时间",
+    "type": "string",
+    "hint": "24 小时制 HH:MM",
+    "default": "23:50",
+    "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+  },
+  "summary_min_messages": {
+    "description": "生成 TLDR 的最小消息条数",
+    "type": "int",
+    "default": 6,
+    "minimum": 1,
+    "maximum": 200
+  },
+  "summary_prompt": {
+    "description": "TLDR 提示词",
+    "type": "text",
+    "default": "请基于以下对话内容生成一段 TL;DR，总结当天的核心信息。要求：\\n1) 使用一段简洁自然语言，不分点；\\n2) 强调人物、事件、时间、关键决定与结果；\\n3) 保留关键数字/数量/规格；\\n4) 不添加臆测与解释。\\n\\n对话内容：\\n{content}"
+  },
+  "summary_injection_days": {
+    "description": "注入摘要的最近天数",
+    "type": "int",
+    "default": 7,
+    "minimum": 1,
+    "maximum": 30
+  },
+  "graph_enabled": {
+    "description": "启用知识图谱",
+    "type": "bool",
+    "default": true
+  },
+  "graph_max_edges": {
+    "description": "注入图谱边数量",
+    "type": "int",
+    "default": 6,
+    "minimum": 0,
+    "maximum": 50
+  },
+  "graph_prompt": {
+    "description": "知识图谱抽取提示词",
+    "type": "text",
+    "default": "请从以下 TL;DR 中抽取人物关系、事件因果与关键事实，输出 JSON 数组。每个元素包含：source, relation, target, type, evidence。\\n仅输出 JSON，不要额外说明。\\n\\nTL;DR：\\n{summary}"
+  },
+  "memory_injection": {
+    "description": "注入记忆到对话",
+    "type": "bool",
+    "default": true
+  },
+  "memory_injection_target": {
+    "description": "记忆注入位置",
+    "type": "string",
+    "options": ["system_prompt", "user_prompt"],
+    "default": "system_prompt"
+  }
+}
