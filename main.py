@@ -330,7 +330,15 @@ class FlomemoMemory(Star):
         summary = await self._summarize_working_memory(session_id, messages)
         if not summary:
             return
-        stored = await self.working_memory.add_message(session_id, "summary", summary)
+        stored = await self.working_memory.add_message(
+            session_id,
+            "summary",
+            summary,
+            metadata={
+                "source_count": len(messages),
+                "source_turn_count": self._working_memory_turns[session_id],
+            },
+        )
         if not stored:
             return
         self._working_memory_buffer[session_id] = []

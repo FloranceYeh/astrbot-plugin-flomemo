@@ -92,12 +92,17 @@ class SummaryArchive:
             grouped.setdefault(session_id, []).append(item)
 
         min_messages = self._get_summary_int("summary_min_messages", 6, minimum=1)
+        min_turns = self._get_summary_int("summary_min_turns", 0, minimum=0)
         for session_id, items in grouped.items():
             items.sort(key=lambda x: x.get("ts", 0.0))
-            if len(items) < min_messages:
+            source_message_count = sum(self._get_source_message_count(item) for item in items)
+            source_turn_count = sum(self._get_source_turn_count(item) for item in items)
+            if source_message_count < min_messages:
+                continue
+            if min_turns > 0 and source_turn_count < min_turns:
                 continue
             content_lines = [
-                f"[{item.get('role', 'user')}] {item.get('content', '')}" for item in items
+                self._format_working_memory_summary_line(item) for item in items
             ]
             conversation_text = "\n".join(content_lines)
             tldr = await self._generate_tldr(session_id, conversation_text)
@@ -108,7 +113,9 @@ class SummaryArchive:
                 "session_id": session_id,
                 "date": date_str,
                 "tldr": tldr,
-                "source_count": len(items),
+                "source_summary_count": len(items),
+                "source_message_count": source_message_count,
+                "source_turn_count": source_turn_count,
                 "created_at": _now_ts(),
             }
             async with self._lock:
@@ -252,6 +259,28 @@ class SummaryArchive:
             await asyncio.to_thread(tmp_path.replace, path)
         except OSError as exc:
             logger.error(f"写入数据文件失败: {path} ({exc})")
+
+    def _get_source_message_count(self, item: dict[str, Any]) -> int:
+        value = item.get("source_count", 1)
+        try:
+            return max(int(value), 1)
+        except (TypeError, ValueError):
+            return 1
+
+    def _get_source_turn_count(self, item: dict[str, Any]) -> int:
+        value = item.get("source_turn_count", 0)
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _format_working_memory_summary_line(self, item: dict[str, Any]) -> str:
+        message_count = self._get_source_message_count(item)
+        turn_count = self._get_source_turn_count(item)
+        counts = f"{message_count} messages"
+        if turn_count > 0:
+            counts += f", {turn_count} turns"
+        return f"[working_memory_summary|{counts}] {item.get('content', '')}"
 
     def _get_config_int(self, key: str, default: int, minimum: int | None = None) -> int:
         value = self.config.get(key, default)

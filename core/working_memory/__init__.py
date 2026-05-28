@@ -83,7 +83,13 @@ class WorkingMemoryStore:
         await self._save_json_file(self._path, records)
         await self._ensure_collection()
 
-    async def add_message(self, session_id: str, role: str, content: str) -> bool:
+    async def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
         content = content.strip()
         if not content:
             return False
@@ -95,6 +101,8 @@ class WorkingMemoryStore:
             "date": _today_str(),
             "ts": _now_ts(),
         }
+        if metadata:
+            record.update(metadata)
         await self._append_local_record(record)
 
         embedding = await self._embed_text(content)
