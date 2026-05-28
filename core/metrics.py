@@ -14,3 +14,28 @@ def log_metric(name: str, **fields: Any):
     if payload:
         message = f"{message} {payload}"
     logger.info(message)
+
+
+def _normalize_value(value: Any) -> Any:
+    """Convert common non-JSON-native values into serializable forms.
+
+    - Keep primitives as-is; convert other objects to str().
+    - If value is a set/tuple, convert to list.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, (list, dict)):
+        return value
+    if isinstance(value, (set, tuple)):
+        return list(value)
+    try:
+        # Try JSON encoding to see if value is serializable
+        json.dumps(value)
+        return value
+    except Exception:
+        try:
+            return str(value)
+        except Exception:
+            return repr(value)
