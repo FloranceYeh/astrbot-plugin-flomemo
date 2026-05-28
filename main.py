@@ -15,6 +15,7 @@ DEFAULT_WORKING_MEMORY_PROMPT = (
     "4) 不引入臆测与解释。\n\n"
     "对话内容：\n{content}"
 )
+DEFAULT_MEMORY_INJECTION_MAX_CHARS = 1800
 
 
 def _today_str() -> str:
@@ -176,27 +177,39 @@ class FlomemoMemory(Star):
         if include_graph or self._get_group_bool("graph", "graph_enabled", True):
             graph_edges = await self.knowledge_graph.query(query)
 
+        remaining = self._get_config_int(
+            "memory_injection_max_chars",
+            DEFAULT_MEMORY_INJECTION_MAX_CHARS,
+            minimum=300,
+        )
         sections: list[str] = []
+        seen: set[str] = set()
         if working_items:
-            sections.append("【工作记忆】")
-            for item in working_items:
-                sections.append(
-                    f"- {item.get('date', '')} {item.get('role', '')}: {item.get('content', '')}"
-                )
+            lines = [
+                f"- {item.get('date', '')} {item.get('role', '')}: {item.get('content', '')}"
+                for item in working_items
+            ]
+            remaining = self._append_memory_section(
+                "【工作记忆】", lines, sections, seen, remaining
+            )
         if summaries:
-            sections.append("【每日摘要】")
-            for item in summaries:
-                sections.append(f"- {item.get('date', '')}: {item.get('tldr', '')}")
+            lines = [f"- {item.get('date', '')}: {item.get('tldr', '')}" for item in summaries]
+            remaining = self._append_memory_section(
+                "【每日摘要】", lines, sections, seen, remaining
+            )
         if graph_edges:
+            graph_edges.sort(key=lambda edge: str(edge.get("date", "")), reverse=True)
             max_edges = self._get_group_int("graph", "graph_max_edges", 6, minimum=0)
             trimmed = graph_edges[:max_edges] if max_edges > 0 else []
             if trimmed:
-                sections.append("【知识图谱】")
-                for edge in trimmed:
-                    sections.append(
-                        f"- {edge['source']} -[{edge['relation']}]-> {edge['target']}"
-                    )
-        return "\n".join(sections).strip()
+                lines = [
+                    f"- {edge['source']} -[{edge['relation']}]-> {edge['target']}"
+                    for edge in trimmed
+                ]
+                remaining = self._append_memory_section(
+                    "【知识图谱】", lines, sections, seen, remaining
+                )
+        return "\n\n".join(sections).strip()
 
     def _get_config_int(self, key: str, default: int, minimum: int | None = None) -> int:
         value = self.config.get(key, default)
@@ -245,6 +258,53 @@ class FlomemoMemory(Star):
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    def _append_memory_section(
+        self,
+        title: str,
+        lines: list[str],
+        sections: list[str],
+        seen: set[str],
+        remaining: int,
+    ) -> int:
+        if remaining <= len(title) + 4:
+            return remaining
+        kept_lines: list[str] = []
+        current_length = len(title)
+        for line in lines:
+            normalized = self._normalize_memory_line(line)
+            if not normalized or normalized in seen:
+                continue
+            next_length = current_length + 1 + len(line)
+            if kept_lines and next_length > remaining:
+                break
+            if not kept_lines and next_length > remaining:
+                line = self._truncate_memory_line(line, remaining - len(title) - 1)
+                if not line:
+                    break
+                normalized = self._normalize_memory_line(line)
+            kept_lines.append(line)
+            seen.add(normalized)
+            current_length = len(title) + sum(len(item) + 1 for item in kept_lines)
+            if current_length >= remaining:
+                break
+        if not kept_lines:
+            return remaining
+        block = "\n".join([title, *kept_lines])
+        sections.append(block)
+        return max(remaining - len(block) - 2, 0)
+
+    def _normalize_memory_line(self, line: str) -> str:
+        return " ".join(line.strip().lower().split())
+
+    def _truncate_memory_line(self, line: str, max_length: int) -> str:
+        if max_length <= 0:
+            return ""
+        if len(line) <= max_length:
+            return line
+        if max_length <= 3:
+            return line[:max_length]
+        return f"{line[: max_length - 3].rstrip()}..."
 
     async def _append_working_memory_batch(
         self,

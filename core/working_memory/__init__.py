@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 import re
 import time
 import uuid
@@ -62,120 +63,125 @@ class WorkingMemoryStore:
         self.context = context
         self.config = config
         self._data_dir = data_dir
+        self._path = data_dir / "working_memory.json"
         self._lock = asyncio.Lock()
+        self._records: list[dict[str, Any]] = []
         self._embedding_provider: Any = None
         self._client: MilvusClient | None = None
         self._collection_name: str | None = None
         self._connect_failed = False
 
     async def load(self):
+        async with self._lock:
+            self._records = await self._load_json_file(self._path, [])
         await self._ensure_collection()
         await self._prune()
 
     async def save(self):
+        async with self._lock:
+            records = list(self._records)
+        await self._save_json_file(self._path, records)
         await self._ensure_collection()
 
     async def add_message(self, session_id: str, role: str, content: str) -> bool:
         content = content.strip()
         if not content:
             return False
+        record = {
+            "id": str(uuid.uuid4()),
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "date": _today_str(),
+            "ts": _now_ts(),
+        }
+        await self._append_local_record(record)
+
         embedding = await self._embed_text(content)
         if embedding is None:
-            logger.warning("未生成 embedding，跳过工作记忆写入。")
-            return False
+            logger.warning("未生成 embedding，工作记忆仅写入本地文本索引。")
+            await self._prune()
+            return True
         await self._ensure_collection(dim=len(embedding))
         if not self._client or not self._collection_name:
-            return False
+            await self._prune()
+            return True
         payload = [
             {
-                "id": str(uuid.uuid4()),
-                "session_id": session_id,
-                "role": role,
-                "content": content,
-                "date": _today_str(),
-                "ts": _now_ts(),
+                **record,
                 "embedding": embedding,
             }
         ]
-        async with self._lock:
-            await asyncio.to_thread(
-                self._client.insert,
-                self._collection_name,
-                payload,
-            )
+        try:
+            async with self._lock:
+                await asyncio.to_thread(
+                    self._client.insert,
+                    self._collection_name,
+                    payload,
+                )
+        except (MilvusException, OSError, ValueError) as exc:
+            logger.warning(f"Milvus 写入失败，已保留本地文本记忆: {exc}")
         await self._prune()
         return True
 
     async def query(self, session_id: str, query: str, top_k: int) -> list[dict[str, Any]]:
         await self._ensure_collection()
-        if not self._client or not self._collection_name:
-            return []
         query_embedding = await self._embed_text(query)
-        expr = f'session_id == "{_escape_expr_value(session_id)}"'
-        if query_embedding is not None:
-            search_params = {"metric_type": "COSINE", "params": {"ef": 64}}
-            async with self._lock:
-                results = await asyncio.to_thread(
-                    self._client.search,
-                    self._collection_name,
-                    data=[query_embedding],
-                    filter=expr,
-                    limit=top_k,
-                    output_fields=["session_id", "role", "content", "date", "ts"],
-                    search_params=search_params,
-                    anns_field="embedding",
-                )
-            return self._format_search_results(results)
-
-        async with self._lock:
-            rows = await asyncio.to_thread(
-                self._client.query,
-                self._collection_name,
-                filter=expr,
-                output_fields=["session_id", "role", "content", "date", "ts", "embedding"],
-            )
-        return self._fallback_rank(query, rows, top_k)
+        vector_hits = await self._query_vector_hits(session_id, query_embedding, top_k)
+        local_rows = await self._get_local_session_rows(session_id)
+        lexical_hits = self._fallback_rank(query, local_rows, top_k * 2)
+        return self._merge_ranked_results(vector_hits, lexical_hits, top_k)
 
     async def get_entries_for_date(self, date_str: str) -> list[dict[str, Any]]:
-        await self._ensure_collection()
-        if not self._client or not self._collection_name:
-            return []
-        expr = f'date == "{_escape_expr_value(date_str)}"'
         async with self._lock:
-            rows = await asyncio.to_thread(
-                self._client.query,
-                self._collection_name,
-                filter=expr,
-                output_fields=["session_id", "role", "content", "date", "ts", "embedding"],
-            )
+            rows = [
+                dict(row) for row in self._records if str(row.get("date", "")) == date_str
+            ]
+        rows.sort(key=lambda x: x.get("ts", 0.0))
         return rows
 
     async def reset_session(self, session_id: str):
+        async with self._lock:
+            self._records = [
+                item for item in self._records if item.get("session_id") != session_id
+            ]
+            records = list(self._records)
+        await self._save_json_file(self._path, records)
+
         await self._ensure_collection()
         if not self._client or not self._collection_name:
             return
         expr = f'session_id == "{_escape_expr_value(session_id)}"'
-        async with self._lock:
-            await asyncio.to_thread(
-                self._client.delete,
-                self._collection_name,
-                filter=expr,
-            )
+        try:
+            async with self._lock:
+                await asyncio.to_thread(
+                    self._client.delete,
+                    self._collection_name,
+                    filter=expr,
+                )
+        except (MilvusException, OSError, ValueError) as exc:
+            logger.warning(f"Milvus 会话删除失败，本地文本记忆已清理: {exc}")
 
     async def count(self) -> int:
+        async with self._lock:
+            local_count = len(self._records)
+
         await self._ensure_collection()
         if not self._client or not self._collection_name:
-            return 0
-        stats = await asyncio.to_thread(
-            self._client.get_collection_stats, self._collection_name
-        )
+            return local_count
+        try:
+            stats = await asyncio.to_thread(
+                self._client.get_collection_stats, self._collection_name
+            )
+        except (MilvusException, OSError, ValueError):
+            return local_count
         if not isinstance(stats, dict):
-            return 0
+            return local_count
         count_value = stats.get("row_count", 0)
         try:
-            return int(count_value)
+            return max(local_count, int(count_value))
         except (TypeError, ValueError):
-            return 0
+            return local_count
 
     async def _ensure_client(self):
         if self._client is not None:
@@ -276,17 +282,30 @@ class WorkingMemoryStore:
             self._collection_name = name
 
     async def _prune(self):
-        if not self._client or not self._collection_name:
-            return
         retention_days = self._get_working_memory_int("retention_days", 3, minimum=1)
         cutoff = _now_ts() - retention_days * 86400
-        expr = f"ts < {cutoff}"
         async with self._lock:
-            await asyncio.to_thread(
-                self._client.delete,
-                self._collection_name,
-                filter=expr,
-            )
+            kept_records = [
+                item for item in self._records if float(item.get("ts", 0.0)) >= cutoff
+            ]
+            changed = len(kept_records) != len(self._records)
+            self._records = kept_records
+            records = list(self._records)
+        if changed:
+            await self._save_json_file(self._path, records)
+
+        if not self._client or not self._collection_name:
+            return
+        expr = f"ts < {cutoff}"
+        try:
+            async with self._lock:
+                await asyncio.to_thread(
+                    self._client.delete,
+                    self._collection_name,
+                    filter=expr,
+                )
+        except (MilvusException, OSError, ValueError) as exc:
+            logger.warning(f"Milvus 过期记忆清理失败: {exc}")
 
     def _format_search_results(self, results: Any) -> list[dict[str, Any]]:
         if not results:
@@ -310,6 +329,7 @@ class WorkingMemoryStore:
                     score = 0.0
             formatted.append(
                 {
+                    "id": entity.get("id", ""),
                     "session_id": entity.get("session_id", ""),
                     "role": entity.get("role", ""),
                     "content": entity.get("content", ""),
@@ -328,10 +348,92 @@ class WorkingMemoryStore:
             content = str(row.get("content", ""))
             score = _lexical_similarity(query, content)
             if score > 0:
-                row["score"] = score
-                scored.append((score, row))
-        scored.sort(key=lambda x: x[0], reverse=True)
+                enriched = dict(row)
+                enriched["score"] = score
+                scored.append((score, enriched))
+        scored.sort(key=lambda x: (x[0], x[1].get("ts", 0.0)), reverse=True)
         return [item for _, item in scored[:top_k]]
+
+    async def _query_vector_hits(
+        self, session_id: str, query_embedding: list[float] | None, top_k: int
+    ) -> list[dict[str, Any]]:
+        if query_embedding is None or not self._client or not self._collection_name:
+            return []
+        expr = f'session_id == "{_escape_expr_value(session_id)}"'
+        search_params = {"metric_type": "COSINE", "params": {"ef": 64}}
+        try:
+            async with self._lock:
+                results = await asyncio.to_thread(
+                    self._client.search,
+                    self._collection_name,
+                    data=[query_embedding],
+                    filter=expr,
+                    limit=top_k,
+                    output_fields=["id", "session_id", "role", "content", "date", "ts"],
+                    search_params=search_params,
+                    anns_field="embedding",
+                )
+        except (MilvusException, OSError, ValueError) as exc:
+            logger.warning(f"Milvus 检索失败，回退到本地文本记忆: {exc}")
+            return []
+        return self._format_search_results(results)
+
+    async def _get_local_session_rows(self, session_id: str) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows = [
+                dict(item) for item in self._records if item.get("session_id") == session_id
+            ]
+        return rows
+
+    def _merge_ranked_results(
+        self,
+        vector_hits: list[dict[str, Any]],
+        lexical_hits: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for item in lexical_hits:
+            key = str(item.get("id", "")) or str(uuid.uuid4())
+            merged[key] = dict(item)
+        for item in vector_hits:
+            key = str(item.get("id", "")) or str(uuid.uuid4())
+            current = merged.get(key, {})
+            merged[key] = {
+                **current,
+                **item,
+                "score": max(
+                    float(current.get("score", 0.0)),
+                    float(item.get("score", 0.0)),
+                ),
+            }
+
+        ranked = sorted(
+            merged.values(),
+            key=lambda item: (
+                float(item.get("score", 0.0)) + self._recency_bonus(item.get("ts", 0.0)),
+                float(item.get("ts", 0.0)),
+            ),
+            reverse=True,
+        )
+        return ranked[:top_k]
+
+    def _recency_bonus(self, ts: Any) -> float:
+        try:
+            age_seconds = max(_now_ts() - float(ts), 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        retention_days = self._get_working_memory_int("retention_days", 3, minimum=1)
+        horizon_seconds = retention_days * 86400
+        if horizon_seconds <= 0:
+            return 0.0
+        freshness = 1.0 - min(age_seconds / horizon_seconds, 1.0)
+        return freshness * 0.15
+
+    async def _append_local_record(self, record: dict[str, Any]):
+        async with self._lock:
+            self._records.append(record)
+            records = list(self._records)
+        await self._save_json_file(self._path, records)
 
     async def _embed_text(self, text: str) -> list[float] | None:
         provider = self._resolve_embedding_provider()
@@ -424,3 +526,28 @@ class WorkingMemoryStore:
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    async def _load_json_file(self, path: Path, default: Any) -> Any:
+        if not path.exists():
+            return default
+        try:
+            content = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        except OSError as exc:
+            logger.error(f"读取数据文件失败: {path} ({exc})")
+            return default
+        if not content.strip():
+            return default
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            logger.error(f"解析数据文件失败: {path} ({exc})")
+            return default
+
+    async def _save_json_file(self, path: Path, data: Any):
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            await asyncio.to_thread(tmp_path.write_text, payload, encoding="utf-8")
+            await asyncio.to_thread(tmp_path.replace, path)
+        except OSError as exc:
+            logger.error(f"写入数据文件失败: {path} ({exc})")

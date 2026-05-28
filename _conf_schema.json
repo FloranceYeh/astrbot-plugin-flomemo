@@ -154,6 +154,14 @@
     "type": "bool",
     "default": true
   },
+  "memory_injection_max_chars": {
+    "description": "记忆注入最大长度",
+    "type": "int",
+    "hint": "限制注入到 system_prompt / user_prompt 的总字符数，超出时按相关度与新鲜度裁剪",
+    "default": 1800,
+    "minimum": 300,
+    "maximum": 12000
+  },
   "memory_injection_target": {
     "description": "记忆注入位置",
     "type": "string",

@@ -4,7 +4,7 @@
 
 ## 功能概览
 
-- **工作记忆**：按配置的对话轮数生成摘要并保存，支持向量检索回忆。
+- **工作记忆**：按配置的对话轮数生成摘要并保存，优先走向量检索；没有 Embedding 时会回退到本地文本记忆。
 - **每日 TLDR**：每日定时将当天内容提炼成 TLDR 存档。
 - **知识图谱**：抽取人物关系、事件因果等结构化关系。
 
@@ -27,6 +27,7 @@
 - `summary.summary_injection_days`：注入到会话中的摘要回看天数。
 - `graph.graph_enabled`：是否启用知识图谱抽取。
 - `graph.graph_max_edges`：注入到会话中的图谱边数量上限。
+- `memory_injection_max_chars`：注入记忆的总字符预算，超出时自动裁剪。
 - `milvus.lite_path` / `milvus.address`：Milvus Lite 或远程地址配置。
 - `milvus.collection`：工作记忆集合名称。
 
@@ -37,6 +38,7 @@
   "embedding_provider_id": "",
   "llm_provider_id": "",
   "memory_injection": true,
+  "memory_injection_max_chars": 1800,
   "memory_injection_target": "system_prompt",
   "working_memory": {
     "retention_days": 3,
@@ -98,4 +100,4 @@
 
 ## 依赖
 
-工作记忆使用 Milvus 向量数据库，请安装 `requirements.txt` 并配置 Milvus 连接信息。
+工作记忆优先使用 Milvus 做向量检索，请安装 `requirements.txt` 并配置 Milvus 连接信息。即使没有可用的 Embedding Provider，插件也会把摘要保留到本地文本记忆中。
