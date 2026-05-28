@@ -278,7 +278,7 @@ class WorkingMemoryStore:
     async def _prune(self):
         if not self._client or not self._collection_name:
             return
-        retention_days = self._get_config_int("retention_days", 3, minimum=1)
+        retention_days = self._get_working_memory_int("retention_days", 3, minimum=1)
         cutoff = _now_ts() - retention_days * 86400
         expr = f"ts < {cutoff}"
         async with self._lock:
@@ -392,6 +392,24 @@ class WorkingMemoryStore:
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    def _get_working_memory_config(self, key: str, default: Any) -> Any:
+        container = self.config.get("working_memory", {})
+        if isinstance(container, dict):
+            return container.get(key, default)
+        return default
+
+    def _get_working_memory_int(
+        self, key: str, default: int, minimum: int | None = None
+    ) -> int:
+        value = self._get_working_memory_config(key, default)
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = default
+        if minimum is not None and value < minimum:
+            return minimum
+        return value
 
     def _get_milvus_config(self, key: str, default: Any) -> Any:
         container = self.config.get("milvus", {})

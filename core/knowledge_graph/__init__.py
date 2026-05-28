@@ -65,7 +65,7 @@ class KnowledgeGraphStore:
         if not provider_id:
             logger.warning(f"无法获取 LLM provider，跳过 {session_id} 的图谱抽取。")
             return
-        prompt_template = self.config.get("graph_prompt", DEFAULT_GRAPH_PROMPT)
+        prompt_template = self._get_graph_config("graph_prompt", DEFAULT_GRAPH_PROMPT)
         prompt = str(prompt_template).format(summary=summary)
         llm_resp = await self.context.llm_generate(
             chat_provider_id=provider_id,
@@ -155,3 +155,9 @@ class KnowledgeGraphStore:
             await asyncio.to_thread(tmp_path.replace, path)
         except OSError as exc:
             logger.error(f"写入数据文件失败: {path} ({exc})")
+
+    def _get_graph_config(self, key: str, default: Any) -> Any:
+        container = self.config.get("graph", {})
+        if isinstance(container, dict):
+            return container.get(key, default)
+        return default

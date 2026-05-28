@@ -168,12 +168,12 @@ class FlomemoMemory(Star):
     async def _build_memory_block(
         self, session_id: str, query: str, include_graph: bool = False
     ) -> str:
-        top_k = self._get_config_int("working_memory_top_k", 5, minimum=1)
+        top_k = self._get_group_int("working_memory", "working_memory_top_k", 5, minimum=1)
         working_items = await self.working_memory.query(session_id, query, top_k)
-        summary_days = self._get_config_int("summary_injection_days", 7, minimum=1)
+        summary_days = self._get_group_int("summary", "summary_injection_days", 7, minimum=1)
         summaries = await self.summary_archive.get_recent(session_id, summary_days)
         graph_edges: list[dict[str, str]] = []
-        if include_graph or self._get_config_bool("graph_enabled", True):
+        if include_graph or self._get_group_bool("graph", "graph_enabled", True):
             graph_edges = await self.knowledge_graph.query(query)
 
         sections: list[str] = []
@@ -188,7 +188,7 @@ class FlomemoMemory(Star):
             for item in summaries:
                 sections.append(f"- {item.get('date', '')}: {item.get('tldr', '')}")
         if graph_edges:
-            max_edges = self._get_config_int("graph_max_edges", 6, minimum=0)
+            max_edges = self._get_group_int("graph", "graph_max_edges", 6, minimum=0)
             trimmed = graph_edges[:max_edges] if max_edges > 0 else []
             if trimmed:
                 sections.append("【知识图谱】")
@@ -216,6 +216,36 @@ class FlomemoMemory(Star):
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
+    def _get_group_config(self, group: str, key: str, default: object) -> object:
+        container = self.config.get(group, {})
+        if isinstance(container, dict):
+            return container.get(key, default)
+        return default
+
+    def _get_group_int(
+        self,
+        group: str,
+        key: str,
+        default: int,
+        minimum: int | None = None,
+    ) -> int:
+        value = self._get_group_config(group, key, default)
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = default
+        if minimum is not None and value < minimum:
+            return minimum
+        return value
+
+    def _get_group_bool(self, group: str, key: str, default: bool) -> bool:
+        value = self._get_group_config(group, key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
     async def _append_working_memory_batch(
         self,
         session_id: str,
@@ -224,7 +254,9 @@ class FlomemoMemory(Star):
     ):
         if not user_text and not assistant_text:
             return
-        batch_size = self._get_config_int("working_memory_batch_size", 5, minimum=1)
+        batch_size = self._get_group_int(
+            "working_memory", "working_memory_batch_size", 5, minimum=1
+        )
         messages = self._working_memory_buffer.setdefault(session_id, [])
         if user_text:
             messages.append({"role": "user", "content": user_text})
@@ -257,8 +289,10 @@ class FlomemoMemory(Star):
         ]
         if not content_lines:
             return ""
-        prompt_template = self.config.get(
-            "working_memory_summary_prompt", DEFAULT_WORKING_MEMORY_PROMPT
+        prompt_template = self._get_group_config(
+            "working_memory",
+            "working_memory_summary_prompt",
+            DEFAULT_WORKING_MEMORY_PROMPT,
         )
         prompt = str(prompt_template).format(content="\n".join(content_lines))
         try:

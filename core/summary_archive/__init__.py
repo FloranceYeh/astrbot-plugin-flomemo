@@ -91,7 +91,7 @@ class SummaryArchive:
                 continue
             grouped.setdefault(session_id, []).append(item)
 
-        min_messages = self._get_config_int("summary_min_messages", 6, minimum=1)
+        min_messages = self._get_summary_int("summary_min_messages", 6, minimum=1)
         for session_id, items in grouped.items():
             items.sort(key=lambda x: x.get("ts", 0.0))
             if len(items) < min_messages:
@@ -114,7 +114,7 @@ class SummaryArchive:
             async with self._lock:
                 self._summaries.append(summary_item)
             await self.save()
-            if graph_store and self._get_config_bool("graph_enabled", True):
+            if graph_store and self._get_group_bool("graph", "graph_enabled", True):
                 await graph_store.update_from_summary(session_id, date_str, tldr)
 
     async def get_recent(self, session_id: str, days: int) -> list[dict[str, Any]]:
@@ -183,7 +183,7 @@ class SummaryArchive:
         return max((target - now).total_seconds(), 1.0)
 
     def _parse_summary_time(self) -> datetime:
-        time_str = str(self.config.get("summary_time", DEFAULT_SUMMARY_TIME))
+        time_str = str(self._get_group_config("summary", "summary_time", DEFAULT_SUMMARY_TIME))
         match = re.match(r"^([01]\d|2[0-3]):([0-5]\d)$", time_str)
         if not match:
             logger.warning(f"summary_time 配置无效，回退为 {DEFAULT_SUMMARY_TIME}")
@@ -199,7 +199,9 @@ class SummaryArchive:
         if not provider_id:
             logger.warning(f"无法获取 LLM provider，跳过 {session_id} 的摘要生成。")
             return ""
-        prompt_template = self.config.get("summary_prompt", DEFAULT_SUMMARY_PROMPT)
+        prompt_template = self._get_group_config(
+            "summary", "summary_prompt", DEFAULT_SUMMARY_PROMPT
+        )
         prompt = str(prompt_template).format(content=conversation)
         llm_resp = await self.context.llm_generate(
             chat_provider_id=provider_id,
@@ -268,3 +270,27 @@ class SummaryArchive:
         if isinstance(value, str):
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    def _get_group_config(self, group: str, key: str, default: Any) -> Any:
+        container = self.config.get(group, {})
+        if isinstance(container, dict):
+            return container.get(key, default)
+        return default
+
+    def _get_group_bool(self, group: str, key: str, default: bool) -> bool:
+        value = self._get_group_config(group, key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _get_summary_int(self, key: str, default: int, minimum: int | None = None) -> int:
+        value = self._get_group_config("summary", key, default)
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = default
+        if minimum is not None and value < minimum:
+            return minimum
+        return value

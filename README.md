@@ -20,13 +20,48 @@
 
 在 WebUI 中配置 `_conf_schema.json` 对应项，例如：
 
-- `retention_days`：工作记忆保留天数。
-- `working_memory_batch_size`：每 N 轮对话生成一次工作记忆摘要。
-- `working_memory_summary_prompt`：工作记忆摘要提示词。
-- `summary_time`：每日 TLDR 生成时间（HH:MM）。
-- `graph_enabled`：是否启用知识图谱抽取。
+- `working_memory.retention_days`：工作记忆保留天数。
+- `working_memory.working_memory_batch_size`：每 N 轮对话生成一次工作记忆摘要。
+- `working_memory.working_memory_summary_prompt`：工作记忆摘要提示词。
+- `summary.summary_time`：每日 TLDR 生成时间（HH:MM）。
+- `summary.summary_injection_days`：注入到会话中的摘要回看天数。
+- `graph.graph_enabled`：是否启用知识图谱抽取。
+- `graph.graph_max_edges`：注入到会话中的图谱边数量上限。
 - `milvus.lite_path` / `milvus.address`：Milvus Lite 或远程地址配置。
 - `milvus.collection`：工作记忆集合名称。
+
+除根级配置 `embedding_provider_id`、`llm_provider_id`、`memory_injection`、`memory_injection_target` 外，其余配置建议按对象分组填写。
+
+```json
+{
+  "embedding_provider_id": "",
+  "llm_provider_id": "",
+  "memory_injection": true,
+  "memory_injection_target": "system_prompt",
+  "working_memory": {
+    "retention_days": 3,
+    "working_memory_top_k": 5,
+    "working_memory_batch_size": 5,
+    "working_memory_summary_prompt": "请将以下对话内容压缩成一段可检索的工作记忆摘要。要求：\\n1) 保留关键人物、事件、时间、结论与约束；\\n2) 保留重要数字/数量/规格；\\n3) 使用简洁自然语言，不分点；\\n4) 不引入臆测与解释。\\n\\n对话内容：\\n{content}"
+  },
+  "summary": {
+    "summary_time": "23:50",
+    "summary_min_messages": 6,
+    "summary_prompt": "请基于以下对话内容生成一段 TL;DR，总结当天的核心信息。要求：\\n1) 使用一段简洁自然语言，不分点；\\n2) 强调人物、事件、时间、关键决定与结果；\\n3) 保留关键数字/数量/规格；\\n4) 不添加臆测与解释。\\n\\n对话内容：\\n{content}",
+    "summary_injection_days": 7
+  },
+  "graph": {
+    "graph_enabled": true,
+    "graph_max_edges": 6,
+    "graph_prompt": "请从以下 TL;DR 中抽取人物关系、事件因果与关键事实，输出 JSON 数组。每个元素包含：source, relation, target, type, evidence。\\n仅输出 JSON，不要额外说明。\\n\\nTL;DR：\\n{summary}"
+  },
+  "milvus": {
+    "lite_path": "milvus/flomemo.db",
+    "db_name": "default",
+    "collection": "flomemo_working_memory"
+  }
+}
+```
 
 ## Milvus 配置示例
 

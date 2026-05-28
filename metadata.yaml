@@ -1,7 +1,7 @@
 name: astrbot_plugin_flomemo
 display_name: Flomemo Long-Term Memory
 author: Florance
-version: 0.1.0
+version: 0.3.0
 desc: 三层长期记忆（工作记忆、每日TLDR、知识图谱）插件
 repo: https://github.com/Florance/astrbot_plugin_flomemo
 astrbot_version: ">=4.16,<5"
