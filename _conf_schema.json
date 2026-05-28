@@ -105,6 +105,12 @@
         "default": "23:50",
         "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
       },
+      "summary_timezone": {
+        "description": "每日 TLDR 时区",
+        "type": "string",
+        "hint": "IANA 时区名称，如 Asia/Shanghai；留空则使用系统时区",
+        "default": ""
+      },
       "summary_min_messages": {
         "description": "生成 TLDR 的最小原始消息条数",
         "type": "int",

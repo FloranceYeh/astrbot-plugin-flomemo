@@ -148,6 +148,15 @@ class WorkingMemoryStore:
         rows.sort(key=lambda x: x.get("ts", 0.0))
         return rows
 
+    async def get_available_dates(self) -> list[str]:
+        async with self._lock:
+            dates = {
+                str(item.get("date", "")).strip()
+                for item in self._records
+                if str(item.get("date", "")).strip()
+            }
+        return sorted(dates)
+
     async def reset_session(self, session_id: str):
         async with self._lock:
             self._records = [

@@ -24,6 +24,7 @@
 - `working_memory.working_memory_batch_size`：每 N 轮对话生成一次工作记忆摘要。
 - `working_memory.working_memory_summary_prompt`：工作记忆摘要提示词。
 - `summary.summary_time`：每日 TLDR 生成时间（HH:MM）。
+- `summary.summary_timezone`：每日 TLDR 使用的时区，留空时跟随系统时区。
 - `summary.summary_min_messages`：生成 TLDR 所需的最小原始消息条数。
 - `summary.summary_min_turns`：生成 TLDR 所需的最小原始对话轮数，`0` 表示不限制。
 - `summary.summary_injection_days`：注入到会话中的摘要回看天数。
@@ -52,6 +53,7 @@
   },
   "summary": {
     "summary_time": "23:50",
+    "summary_timezone": "Asia/Shanghai",
     "summary_min_messages": 6,
     "summary_min_turns": 0,
     "summary_prompt": "请基于以下对话内容生成一段 TL;DR，总结当天的核心信息。要求：\\n1) 使用一段简洁自然语言，不分点；\\n2) 强调人物、事件、时间、关键决定与结果；\\n3) 保留关键数字/数量/规格；\\n4) 不添加臆测与解释。\\n\\n对话内容：\\n{content}",
@@ -114,6 +116,8 @@
 - 工作记忆层先按 `working_memory.working_memory_batch_size` 把多轮对话压成摘要，并为每条摘要保存 `source_count` 与 `source_turn_count` 元数据。
 - 每日 TLDR 层不会直接按“摘要条数”判断是否生成，而是先累计这些元数据，再按 `summary.summary_min_messages` / `summary.summary_min_turns` 判断是否满足阈值。
 - 因此每日 TLDR 依然是基于工作记忆摘要做二级聚合，但阈值统计使用的是真实原始消息量和对话轮数。
+- 摘要调度会记录上次成功执行日期与时间；如果 bot 在摘要时间离线，启动后会按 `summary.summary_timezone` 补跑缺失日期。
+- 摘要和图谱保存都做了防抖，不会在每条记录生成后立刻写盘。
 
 ## 图谱链路
 

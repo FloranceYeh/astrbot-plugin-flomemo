@@ -17,6 +17,7 @@ DEFAULT_GRAPH_PROMPT = (
 )
 DEFAULT_GRAPH_MIN_CONFIDENCE = 0.35
 DEFAULT_GRAPH_QUERY_LIMIT = 10
+DEFAULT_SAVE_DEBOUNCE_SECONDS = 2.0
 
 
 def _tokenize(text: str) -> set[str]:
@@ -86,6 +87,7 @@ class KnowledgeGraphStore:
         self._lock = asyncio.Lock()
         self._nodes: dict[str, str] = {}
         self._edges: list[dict[str, Any]] = []
+        self._save_task: asyncio.Task | None = None
 
     async def load(self):
         async with self._lock:
@@ -97,14 +99,15 @@ class KnowledgeGraphStore:
             self._edges = self._normalize_loaded_edges(raw_edges)
 
     async def save(self):
-        async with self._lock:
-            data = {
-                "nodes": [
-                    {"key": key, "name": name} for key, name in sorted(self._nodes.items())
-                ],
-                "edges": list(self._edges),
-            }
-        await self._save_json_file(self._path, data)
+        current = asyncio.current_task()
+        if self._save_task and not self._save_task.done() and self._save_task is not current:
+            self._save_task.cancel()
+            try:
+                await self._save_task
+            except asyncio.CancelledError:
+                pass
+        self._save_task = None
+        await self._persist_now()
 
     async def update_from_summary(self, session_id: str, date_str: str, summary: str):
         provider_id = await self._resolve_chat_provider_id(session_id)
@@ -126,7 +129,7 @@ class KnowledgeGraphStore:
                 if not edge:
                     continue
                 self._merge_edge(edge)
-        await self.save()
+        self._request_save()
 
     async def query(self, query: str) -> list[dict[str, Any]]:
         keywords = _tokenize(query)
@@ -200,6 +203,31 @@ class KnowledgeGraphStore:
             await asyncio.to_thread(tmp_path.replace, path)
         except OSError as exc:
             logger.error(f"写入数据文件失败: {path} ({exc})")
+
+    def _request_save(self):
+        if self._save_task and not self._save_task.done():
+            return
+        self._save_task = asyncio.create_task(self._delayed_save())
+
+    async def _delayed_save(self):
+        try:
+            await asyncio.sleep(DEFAULT_SAVE_DEBOUNCE_SECONDS)
+            await self._persist_now()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if asyncio.current_task() is self._save_task:
+                self._save_task = None
+
+    async def _persist_now(self):
+        async with self._lock:
+            data = {
+                "nodes": [
+                    {"key": key, "name": name} for key, name in sorted(self._nodes.items())
+                ],
+                "edges": list(self._edges),
+            }
+        await self._save_json_file(self._path, data)
 
     def _get_graph_config(self, key: str, default: Any) -> Any:
         container = self.config.get("graph", {})

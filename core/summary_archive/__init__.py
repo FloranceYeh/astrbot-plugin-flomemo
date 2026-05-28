@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.star import Context
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from ..working_memory import WorkingMemoryStore
 
 DEFAULT_SUMMARY_TIME = "23:50"
+DEFAULT_SUMMARY_TIMEZONE = ""
+DEFAULT_SAVE_DEBOUNCE_SECONDS = 2.0
 DEFAULT_SUMMARY_PROMPT = (
     "请基于以下对话内容生成一段 TL;DR，总结当天的核心信息。要求：\n"
     "1) 使用一段简洁自然语言，不分点；\n"
@@ -25,32 +28,40 @@ DEFAULT_SUMMARY_PROMPT = (
 )
 
 
-def _now_ts() -> float:
-    return time.time()
-
-
-def _today_str(now: datetime | None = None) -> str:
-    current = now or datetime.now()
-    return current.date().isoformat()
-
-
 class SummaryArchive:
     def __init__(self, context: Context, config: AstrBotConfig, data_dir: Path):
         self.context = context
         self.config = config
         self._path = data_dir / "daily_summaries.json"
+        self._state_path = data_dir / "daily_summaries_state.json"
         self._lock = asyncio.Lock()
         self._summaries: list[dict[str, Any]] = []
+        self._state: dict[str, Any] = {
+            "last_successful_date": "",
+            "last_successful_run_at": 0.0,
+            "timezone": "",
+        }
         self._task: asyncio.Task | None = None
+        self._save_task: asyncio.Task | None = None
+        self._timezone: Any = None
 
     async def load(self):
         async with self._lock:
             self._summaries = await self._load_json_file(self._path, [])
+            loaded_state = await self._load_json_file(self._state_path, {})
+            if isinstance(loaded_state, dict):
+                self._state.update(loaded_state)
 
     async def save(self):
-        async with self._lock:
-            data = list(self._summaries)
-        await self._save_json_file(self._path, data)
+        current = asyncio.current_task()
+        if self._save_task and not self._save_task.done() and self._save_task is not current:
+            self._save_task.cancel()
+            try:
+                await self._save_task
+            except asyncio.CancelledError:
+                pass
+        self._save_task = None
+        await self._persist_now()
 
     def start_scheduler(
         self,
@@ -66,23 +77,26 @@ class SummaryArchive:
 
     async def stop_scheduler(self):
         if not self._task:
+            await self.save()
             return
         self._task.cancel()
         try:
             await self._task
         except asyncio.CancelledError:
             pass
+        await self.save()
 
     async def run_daily_summary(
         self,
         working_memory: "WorkingMemoryStore",
         graph_store: "KnowledgeGraphStore | None",
-    ):
-        date_str = _today_str()
+        date_str: str | None = None,
+    ) -> bool:
+        date_str = date_str or self._today_str()
         entries = await working_memory.get_entries_for_date(date_str)
         existing = await self._existing_summary_sessions(date_str)
         if not entries:
-            return
+            return True
 
         grouped: dict[str, list[dict[str, Any]]] = {}
         for item in entries:
@@ -91,8 +105,12 @@ class SummaryArchive:
                 continue
             grouped.setdefault(session_id, []).append(item)
 
+        if not grouped:
+            return True
+
         min_messages = self._get_summary_int("summary_min_messages", 6, minimum=1)
         min_turns = self._get_summary_int("summary_min_turns", 0, minimum=0)
+        had_failures = False
         for session_id, items in grouped.items():
             items.sort(key=lambda x: x.get("ts", 0.0))
             source_message_count = sum(self._get_source_message_count(item) for item in items)
@@ -106,6 +124,9 @@ class SummaryArchive:
             ]
             conversation_text = "\n".join(content_lines)
             tldr = await self._generate_tldr(session_id, conversation_text)
+            if tldr is None:
+                had_failures = True
+                continue
             if not tldr:
                 continue
             summary_item = {
@@ -116,16 +137,17 @@ class SummaryArchive:
                 "source_summary_count": len(items),
                 "source_message_count": source_message_count,
                 "source_turn_count": source_turn_count,
-                "created_at": _now_ts(),
+                "created_at": time.time(),
             }
             async with self._lock:
                 self._summaries.append(summary_item)
-            await self.save()
+            self._request_save()
             if graph_store and self._get_group_bool("graph", "graph_enabled", True):
                 await graph_store.update_from_summary(session_id, date_str, tldr)
+        return not had_failures
 
     async def get_recent(self, session_id: str, days: int) -> list[dict[str, Any]]:
-        cutoff = datetime.now().date() - timedelta(days=days - 1)
+        cutoff = self._now().date() - timedelta(days=days - 1)
         async with self._lock:
             items: list[dict[str, Any]] = []
             for item in self._summaries:
@@ -168,20 +190,24 @@ class SummaryArchive:
         working_memory: "WorkingMemoryStore",
         graph_store: "KnowledgeGraphStore | None",
     ):
+        await self._catch_up_missing_dates(working_memory, graph_store)
         while True:
             delay = self._seconds_to_next_summary()
             try:
                 await asyncio.sleep(delay)
             except asyncio.CancelledError:
                 break
-            await self.run_daily_summary(working_memory, graph_store)
+            date_str = self._today_str()
+            success = await self.run_daily_summary(working_memory, graph_store, date_str)
+            if success:
+                await self._mark_success(date_str)
 
     def _seconds_to_next_summary(self) -> float:
-        now = datetime.now()
-        summary_time = self._parse_summary_time()
+        now = self._now()
+        hour, minute = self._parse_summary_time()
         target = now.replace(
-            hour=summary_time.hour,
-            minute=summary_time.minute,
+            hour=hour,
+            minute=minute,
             second=0,
             microsecond=0,
         )
@@ -189,33 +215,36 @@ class SummaryArchive:
             target += timedelta(days=1)
         return max((target - now).total_seconds(), 1.0)
 
-    def _parse_summary_time(self) -> datetime:
+    def _parse_summary_time(self) -> tuple[int, int]:
         time_str = str(self._get_group_config("summary", "summary_time", DEFAULT_SUMMARY_TIME))
         match = re.match(r"^([01]\d|2[0-3]):([0-5]\d)$", time_str)
         if not match:
             logger.warning(f"summary_time 配置无效，回退为 {DEFAULT_SUMMARY_TIME}")
             match = re.match(r"^([01]\d|2[0-3]):([0-5]\d)$", DEFAULT_SUMMARY_TIME)
         if not match:
-            return datetime.now()
+            return 23, 50
         hour = int(match.group(1))
         minute = int(match.group(2))
-        return datetime.now().replace(hour=hour, minute=minute)
+        return hour, minute
 
-    async def _generate_tldr(self, session_id: str, conversation: str) -> str:
+    async def _generate_tldr(self, session_id: str, conversation: str) -> str | None:
         provider_id = await self._resolve_chat_provider_id(session_id)
         if not provider_id:
             logger.warning(f"无法获取 LLM provider，跳过 {session_id} 的摘要生成。")
-            return ""
+            return None
         prompt_template = self._get_group_config(
             "summary", "summary_prompt", DEFAULT_SUMMARY_PROMPT
         )
         prompt = str(prompt_template).format(content=conversation)
-        llm_resp = await self.context.llm_generate(
-            chat_provider_id=provider_id,
-            prompt=prompt,
-        )
-        tldr = getattr(llm_resp, "completion_text", "").strip()
-        return tldr
+        try:
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+            )
+        except Exception as exc:
+            logger.error(f"每日摘要生成失败: {exc}")
+            return None
+        return getattr(llm_resp, "completion_text", "").strip()
 
     async def _resolve_chat_provider_id(self, session_id: str) -> str | None:
         provider_id = str(self.config.get("llm_provider_id", "")).strip()
@@ -259,6 +288,95 @@ class SummaryArchive:
             await asyncio.to_thread(tmp_path.replace, path)
         except OSError as exc:
             logger.error(f"写入数据文件失败: {path} ({exc})")
+
+    def _request_save(self):
+        if self._save_task and not self._save_task.done():
+            return
+        self._save_task = asyncio.create_task(self._delayed_save())
+
+    async def _delayed_save(self):
+        try:
+            await asyncio.sleep(DEFAULT_SAVE_DEBOUNCE_SECONDS)
+            await self._persist_now()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if asyncio.current_task() is self._save_task:
+                self._save_task = None
+
+    async def _persist_now(self):
+        async with self._lock:
+            data = list(self._summaries)
+            state = dict(self._state)
+        await self._save_json_file(self._path, data)
+        await self._save_json_file(self._state_path, state)
+
+    async def _catch_up_missing_dates(
+        self,
+        working_memory: "WorkingMemoryStore",
+        graph_store: "KnowledgeGraphStore | None",
+    ):
+        available_dates = await working_memory.get_available_dates()
+        if not available_dates:
+            return
+        target_date = self._latest_runnable_date()
+        if target_date is None:
+            return
+        last_successful = self._parse_state_date(self._state.get("last_successful_date", ""))
+        for date_str in available_dates:
+            candidate = self._parse_state_date(date_str)
+            if candidate is None or candidate > target_date:
+                continue
+            if last_successful is not None and candidate <= last_successful:
+                continue
+            success = await self.run_daily_summary(working_memory, graph_store, date_str)
+            if not success:
+                break
+            await self._mark_success(date_str)
+
+    async def _mark_success(self, date_str: str):
+        async with self._lock:
+            self._state["last_successful_date"] = date_str
+            self._state["last_successful_run_at"] = time.time()
+            self._state["timezone"] = self._get_timezone_name()
+        self._request_save()
+
+    def _latest_runnable_date(self):
+        now = self._now()
+        hour, minute = self._parse_summary_time()
+        summary_time_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now >= summary_time_today:
+            return now.date()
+        return (now - timedelta(days=1)).date()
+
+    def _parse_state_date(self, value: Any):
+        try:
+            return datetime.fromisoformat(str(value)).date()
+        except (TypeError, ValueError):
+            return None
+
+    def _get_timezone(self):
+        if self._timezone is not None:
+            return self._timezone
+        tz_name = self._get_timezone_name()
+        if tz_name:
+            try:
+                self._timezone = ZoneInfo(tz_name)
+                return self._timezone
+            except ZoneInfoNotFoundError:
+                logger.warning(f"summary_timezone 配置无效，回退到系统时区: {tz_name}")
+        self._timezone = datetime.now().astimezone().tzinfo
+        return self._timezone
+
+    def _get_timezone_name(self) -> str:
+        return str(self._get_group_config("summary", "summary_timezone", DEFAULT_SUMMARY_TIMEZONE)).strip()
+
+    def _now(self) -> datetime:
+        tz = self._get_timezone()
+        return datetime.now(tz) if tz is not None else datetime.now()
+
+    def _today_str(self) -> str:
+        return self._now().date().isoformat()
 
     def _get_source_message_count(self, item: dict[str, Any]) -> int:
         value = item.get("source_count", 1)
