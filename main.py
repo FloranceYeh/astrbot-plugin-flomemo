@@ -191,11 +191,25 @@ class FlomemoMemory(Star):
         started_at = time.perf_counter()
         top_k = self.config.get_group_int("working_memory", "working_memory_top_k", 5, minimum=1)
         working_items = await self.working_memory.query(session_id, query, top_k)
+        try:
+            if self.config.get_group_bool("working_memory", "console_log_query", False):
+                print(
+                    f"[flomemo.console.recall] session={session_id} query={query!r} working_hits={len(working_items)} top_k={top_k}"
+                )
+        except Exception:
+            pass
         summary_days = self.config.get_group_int("summary", "summary_injection_days", 7, minimum=1)
         summaries = await self.summary_archive.get_recent(session_id, summary_days)
         graph_edges: list[dict[str, str]] = []
         if include_graph or self.config.get_group_bool("graph", "graph_enabled", True):
             graph_edges = await self.knowledge_graph.query(query)
+            try:
+                if self.config.get_group_bool("graph", "console_log_query", False):
+                    print(
+                        f"[flomemo.console.graph] session={session_id} query={query!r} graph_hits={len(graph_edges)}"
+                    )
+            except Exception:
+                pass
 
         remaining = self.config.get_int(
             "memory_injection_max_chars",

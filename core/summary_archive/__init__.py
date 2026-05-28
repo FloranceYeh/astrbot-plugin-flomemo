@@ -157,6 +157,13 @@ class SummaryArchive:
                 tldr_chars=len(tldr),
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
             )
+            try:
+                if self.config.get_group_bool("summary", "console_log", False):
+                    print(
+                        f"[flomemo.console.summary] session={session_id} date={date_str} tldr={tldr}"
+                    )
+            except Exception:
+                pass
         return not had_failures
 
     async def get_recent(self, session_id: str, days: int) -> list[dict[str, Any]]:
