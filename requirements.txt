@@ -1,0 +1,1 @@
+pymilvus[milvus_lite]>=2.5.4,<3.0.0

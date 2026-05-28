@@ -1,4 +1,4 @@
-# Flomeno Long-Term Memory
+# Flomemo Long-Term Memory
 
 三层长期记忆插件：工作记忆（向量检索）、每日 TLDR 长期档案、知识图谱。
 
@@ -10,11 +10,11 @@
 
 ## 指令
 
-- `/flomeno recall <query>`：回忆相关记忆。
-- `/flomeno tldr [YYYY-MM-DD]`：查看指定日期摘要。
-- `/flomeno graph <实体>`：查询知识图谱关系。
-- `/flomeno status`：查看记忆统计。
-- `/flomeno reset confirm`：清空当前会话记忆。
+- `/flomemo recall <query>`：回忆相关记忆。
+- `/flomemo tldr [YYYY-MM-DD]`：查看指定日期摘要。
+- `/flomemo graph <实体>`：查询知识图谱关系。
+- `/flomemo status`：查看记忆统计。
+- `/flomemo reset confirm`：清空当前会话记忆。
 
 ## 配置
 
@@ -23,3 +23,9 @@
 - `retention_days`：工作记忆保留天数。
 - `summary_time`：每日 TLDR 生成时间（HH:MM）。
 - `graph_enabled`：是否启用知识图谱抽取。
+- `milvus.lite_path` / `milvus.address`：Milvus Lite 或远程地址配置。
+- `milvus.collection`：工作记忆集合名称。
+
+## 依赖
+
+工作记忆使用 Milvus 向量数据库，请安装 `requirements.txt` 并配置 Milvus 连接信息。

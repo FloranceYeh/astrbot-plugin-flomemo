@@ -12,7 +12,7 @@ def _today_str() -> str:
     return datetime.now().date().isoformat()
 
 
-class FlomenoMemory(Star):
+class FlomemoMemory(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
@@ -69,14 +69,14 @@ class FlomenoMemory(Star):
                 session_id, "assistant", str(assistant_text)
             )
 
-    @filter.command_group("flomeno")
-    def flomeno_group(self):
-        """Flomeno 长期记忆指令组 /flomeno"""
+    @filter.command_group("flomemo")
+    def flomemo_group(self):
+        """Flomemo 长期记忆指令组 /flomemo"""
         pass
 
-    @flomeno_group.command("recall")  # type: ignore
+    @flomemo_group.command("recall")  # type: ignore
     async def recall_cmd(self, event: AstrMessageEvent, query: str):
-        """回忆相关记忆 /flomeno recall <query>"""
+        """回忆相关记忆 /flomemo recall <query>"""
         session_id = event.unified_msg_origin
         if not session_id:
             yield event.plain_result("无法获取当前会话 ID。")
@@ -87,9 +87,9 @@ class FlomenoMemory(Star):
             return
         yield event.plain_result(memory_block)
 
-    @flomeno_group.command("tldr")  # type: ignore
+    @flomemo_group.command("tldr")  # type: ignore
     async def tldr_cmd(self, event: AstrMessageEvent, date: str | None = None):
-        """查看指定日期摘要 /flomeno tldr [YYYY-MM-DD]"""
+        """查看指定日期摘要 /flomemo tldr [YYYY-MM-DD]"""
         session_id = event.unified_msg_origin
         if not session_id:
             yield event.plain_result("无法获取当前会话 ID。")
@@ -102,9 +102,9 @@ class FlomenoMemory(Star):
         lines = [f"{item['date']}: {item['tldr']}" for item in summaries]
         yield event.plain_result("\n".join(lines))
 
-    @flomeno_group.command("graph")  # type: ignore
+    @flomemo_group.command("graph")  # type: ignore
     async def graph_cmd(self, event: AstrMessageEvent, entity: str):
-        """查询知识图谱 /flomeno graph <实体>"""
+        """查询知识图谱 /flomemo graph <实体>"""
         edges = await self.knowledge_graph.query(entity)
         if not edges:
             yield event.plain_result("暂无相关图谱关系。")
@@ -116,9 +116,9 @@ class FlomenoMemory(Star):
         ]
         yield event.plain_result("\n".join(lines))
 
-    @flomeno_group.command("status")  # type: ignore
+    @flomemo_group.command("status")  # type: ignore
     async def status_cmd(self, event: AstrMessageEvent):
-        """查看记忆统计 /flomeno status"""
+        """查看记忆统计 /flomemo status"""
         working_count = await self.working_memory.count()
         summary_count = await self.summary_archive.count()
         graph_nodes = await self.knowledge_graph.count_nodes()
@@ -131,11 +131,11 @@ class FlomenoMemory(Star):
             f"- 图谱边: {graph_edges}"
         )
 
-    @flomeno_group.command("reset")  # type: ignore
+    @flomemo_group.command("reset")  # type: ignore
     async def reset_cmd(self, event: AstrMessageEvent, confirm: str | None = None):
-        """清空当前会话记忆 /flomeno reset confirm"""
+        """清空当前会话记忆 /flomemo reset confirm"""
         if confirm != "confirm":
-            yield event.plain_result("请使用 /flomeno reset confirm 确认清空当前会话记忆。")
+            yield event.plain_result("请使用 /flomemo reset confirm 确认清空当前会话记忆。")
             return
         session_id = event.unified_msg_origin
         if not session_id:

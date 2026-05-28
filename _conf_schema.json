@@ -6,6 +6,54 @@
     "hint": "用于工作记忆向量化的 Embedding Provider，留空则使用默认",
     "default": ""
   },
+  "milvus": {
+    "description": "Milvus 向量数据库配置",
+    "type": "object",
+    "items": {
+      "lite_path": {
+        "description": "Milvus Lite 数据路径",
+        "type": "string",
+        "hint": "优先使用 Milvus Lite，本地路径或相对路径（相对插件数据目录）",
+        "default": ""
+      },
+      "address": {
+        "description": "Milvus 服务地址",
+        "type": "string",
+        "hint": "支持 http(s)://host:port 或 host:port，留空则使用 127.0.0.1:19530",
+        "default": ""
+      },
+      "db_name": {
+        "description": "Milvus 数据库名称",
+        "type": "string",
+        "default": "default"
+      },
+      "user": {
+        "description": "Milvus 用户名",
+        "type": "string",
+        "default": ""
+      },
+      "password": {
+        "description": "Milvus 密码",
+        "type": "string",
+        "default": ""
+      },
+      "token": {
+        "description": "Milvus Token",
+        "type": "string",
+        "default": ""
+      },
+      "secure": {
+        "description": "Milvus 使用 TLS",
+        "type": "bool",
+        "default": false
+      },
+      "collection": {
+        "description": "工作记忆集合名称",
+        "type": "string",
+        "default": "flomemo_working_memory"
+      }
+    }
+  },
   "llm_provider_id": {
     "description": "TLDR/图谱 LLM Provider",
     "type": "string",
